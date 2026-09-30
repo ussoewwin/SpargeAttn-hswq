@@ -206,7 +206,7 @@ ext_modules.append(fused_extension)
 
 setup(
     name='spas_sage_hswq_attn', 
-    version='0.1.0',  
+    version='1.0.0',  
     author='Jintao Zhang, Chendong Xiang, Haofeng Huang',  
     author_email='jt-zhang6@gmail.com', 
     packages=find_packages(),  
