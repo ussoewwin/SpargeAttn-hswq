@@ -184,7 +184,7 @@ if HAS_SM90:
     sources += get_instantiations("csrc/qattn/instantiations_sm90")
 
 qattn_extension = CUDAExtension(
-    name="spas_sage_attn._qattn",
+    name="spas_sage_hswq_attn._qattn",
     sources=sources,
     extra_compile_args={
         "cxx": CXX_FLAGS,
@@ -195,7 +195,7 @@ qattn_extension = CUDAExtension(
 ext_modules.append(qattn_extension)
 
 fused_extension = CUDAExtension(
-    name="spas_sage_attn._fused",
+    name="spas_sage_hswq_attn._fused",
     sources=["csrc/fused/pybind.cpp", "csrc/fused/fused.cu"],
     extra_compile_args={
         "cxx": CXX_FLAGS,
@@ -205,7 +205,7 @@ fused_extension = CUDAExtension(
 ext_modules.append(fused_extension)
 
 setup(
-    name='spas_sage_attn', 
+    name='spas_sage_hswq_attn', 
     version='0.1.0',  
     author='Jintao Zhang, Chendong Xiang, Haofeng Huang',  
     author_email='jt-zhang6@gmail.com', 

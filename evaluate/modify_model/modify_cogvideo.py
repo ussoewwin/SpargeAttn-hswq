@@ -5,7 +5,7 @@ import os
 from typing import Callable, List, Optional, Tuple, Union
 from diffusers.models.attention_processor import Attention
 from diffusers.models import CogVideoXTransformer3DModel
-from spas_sage_attn.autotune import SparseAttentionMeansim, extract_sparse_attention_state_dict, load_sparse_attention_state_dict
+from spas_sage_hswq_attn.autotune import SparseAttentionMeansim, extract_sparse_attention_state_dict, load_sparse_attention_state_dict
 
 
 class SageAttnCogVideoXAttnProcessor:
@@ -81,7 +81,7 @@ class SageAttnCogVideoXAttnProcessor:
         return hidden_states, encoder_hidden_states
     
 
-def set_spas_sage_attn_cogvideox(
+def set_spas_sage_hswq_attn_cogvideox(
     model: CogVideoXTransformer3DModel,
     verbose=False,
     l1=0.06,

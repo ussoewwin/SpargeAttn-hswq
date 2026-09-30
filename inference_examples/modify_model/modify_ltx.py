@@ -21,7 +21,7 @@ from diffusers.utils import is_torch_version, logging
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from diffusers.models.transformers.transformer_ltx import LTXAttention, apply_rotary_emb
-from spas_sage_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name

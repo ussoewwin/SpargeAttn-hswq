@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from typing import Callable, List, Optional, Tuple, Union
 from diffusers.models.attention_processor import Attention
 from diffusers import FluxTransformer2DModel
-from spas_sage_attn.autotune import SparseAttentionMeansim
+from spas_sage_hswq_attn.autotune import SparseAttentionMeansim
 
 
 class SageAttnFluxAttnProcessor:
@@ -95,7 +95,7 @@ class SageAttnFluxAttnProcessor:
             return hidden_states
 
 
-def set_spas_sage_attn_flux(
+def set_spas_sage_hswq_attn_flux(
     model: FluxTransformer2DModel,
     verbose=False,
     l1=0.07,

@@ -22,7 +22,7 @@ from diffusers.utils import logging
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 
 from diffusers.models.transformers.transformer_wan import _get_qkv_projections, _get_added_kv_projections, WanAttention
-from spas_sage_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name

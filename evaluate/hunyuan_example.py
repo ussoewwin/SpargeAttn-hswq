@@ -3,11 +3,11 @@ from diffusers import HunyuanVideoPipeline, HunyuanVideoTransformer3DModel
 from diffusers.utils import export_to_video
 import argparse
 from tqdm import tqdm
-from spas_sage_attn.autotune import (
+from spas_sage_hswq_attn.autotune import (
     extract_sparse_attention_state_dict,
     load_sparse_attention_state_dict,
 )
-from modify_model.modify_hunyuan import set_spas_sage_attn_hunyuan
+from modify_model.modify_hunyuan import set_spas_sage_hswq_attn_hunyuan
 
 file_path = 'evaluate/datasets/video/prompts.txt'
 model_id = "hunyuanvideo-community/HunyuanVideo"
@@ -17,7 +17,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="hunyuan Evaluation")
     
     ## sparge part
-    parser.add_argument("--use_spas_sage_attn", action="store_true", help="Use Sage Attention")
+    parser.add_argument("--use_spas_sage_hswq_attn", action="store_true", help="Use Sage Attention")
     parser.add_argument("--tune", action="store_true", help="tuning hyperpamameters")
     parser.add_argument('--parallel_tune', action='store_true', help='enable prallel tuning')
     parser.add_argument('--l1', type=float, default=0.06, help='l1 bound for qk sparse')
@@ -61,8 +61,8 @@ if __name__ == "__main__":
     transformer.forward = forward.__get__(transformer, HunyuanVideoTransformer3DModel)
     
     
-    if args.use_spas_sage_attn:
-        set_spas_sage_attn_hunyuan(transformer, verbose=args.verbose)
+    if args.use_spas_sage_hswq_attn:
+        set_spas_sage_hswq_attn_hunyuan(transformer, verbose=args.verbose)
         if not args.tune:
             saved_state_dict = torch.load(args.model_out_path)
             load_sparse_attention_state_dict(transformer, saved_state_dict)
@@ -87,7 +87,7 @@ if __name__ == "__main__":
         gc.collect()
         torch.cuda.empty_cache()
 
-    if args.use_spas_sage_attn and args.tune:
+    if args.use_spas_sage_hswq_attn and args.tune:
         saved_state_dict = extract_sparse_attention_state_dict(transformer)
         torch.save(saved_state_dict, args.model_out_path)  # +args.model_name.split("/")[-1]+".pt"
 

@@ -4,8 +4,8 @@ from diffusers.utils import export_to_video
 from diffusers.models import CogVideoXTransformer3DModel
 import argparse
 from tqdm import tqdm
-from modify_model.modify_cogvideo import set_spas_sage_attn_cogvideox
-from spas_sage_attn.autotune import (
+from modify_model.modify_cogvideo import set_spas_sage_hswq_attn_cogvideox
+from spas_sage_hswq_attn.autotune import (
     extract_sparse_attention_state_dict,
     load_sparse_attention_state_dict,
 )
@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument('--pv_l1', type=float, default=0.065, help='l1 bound for pv sparse')
     parser.add_argument('--compile', action='store_true', help='Compile the model')
     parser.add_argument(
-        "--use_spas_sage_attn", action="store_true", help="Use Sage Attention"
+        "--use_spas_sage_hswq_attn", action="store_true", help="Use Sage Attention"
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose")
     parser.add_argument(
@@ -62,8 +62,8 @@ if __name__ == "__main__":
             torch_dtype=dtype_,
         )
 
-        if args.use_spas_sage_attn:
-            set_spas_sage_attn_cogvideox(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
+        if args.use_spas_sage_hswq_attn:
+            set_spas_sage_hswq_attn_cogvideox(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
 
         pipe = CogVideoXPipeline.from_pretrained(
             "THUDM/CogVideoX-2b",
@@ -102,8 +102,8 @@ if __name__ == "__main__":
             torch_dtype=dtype_,
         )
 
-        if args.use_spas_sage_attn:
-            set_spas_sage_attn_cogvideox(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
+        if args.use_spas_sage_hswq_attn:
+            set_spas_sage_hswq_attn_cogvideox(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
             # load saved state_dict
             saved_state_dict = torch.load(args.model_out_path)  
             load_sparse_attention_state_dict(transformer, saved_state_dict)

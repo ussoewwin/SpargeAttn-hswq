@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from typing import Optional
 from diffusers.models.attention_processor import Attention
 from diffusers.models import CogVideoXTransformer3DModel
-from spas_sage_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
 
 
 class SpargeCogVideoXAttnProcessor:

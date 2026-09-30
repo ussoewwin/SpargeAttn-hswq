@@ -5,8 +5,8 @@ import logging
 import os
 import sys
 import warnings
-from modify_model.modify_wan import set_spas_sage_attn_wan
-from spas_sage_attn.autotune import (
+from modify_model.modify_wan import set_spas_sage_hswq_attn_wan
+from spas_sage_hswq_attn.autotune import (
     extract_sparse_attention_state_dict,
     load_sparse_attention_state_dict,
 )
@@ -197,7 +197,7 @@ def _parse_args():
         help="Classifier free guidance scale.")
 
     ## sparge part
-    parser.add_argument("--use_spas_sage_attn", action="store_true", help="Use Sage Attention")
+    parser.add_argument("--use_spas_sage_hswq_attn", action="store_true", help="Use Sage Attention")
     parser.add_argument("--tune", action="store_true", help="tuning hyperpamameters")
     parser.add_argument('--parallel_tune', action='store_true', help='enable prallel tuning')
     parser.add_argument('--l1', type=float, default=0.06, help='l1 bound for qk sparse')
@@ -312,8 +312,8 @@ def generate(args):
             t5_cpu=args.t5_cpu,
         )
         
-        if args.use_spas_sage_attn:
-            set_spas_sage_attn_wan(wan_t2v.model, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1, tune_pv=args.tune_pv)
+        if args.use_spas_sage_hswq_attn:
+            set_spas_sage_hswq_attn_wan(wan_t2v.model, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1, tune_pv=args.tune_pv)
             if not args.tune:
                 saved_state_dict = torch.load(args.model_out_path)
                 load_sparse_attention_state_dict(wan_t2v.model, saved_state_dict)
@@ -357,7 +357,7 @@ def generate(args):
                         normalize=True,
                         value_range=(-1, 1))
         
-        if args.use_spas_sage_attn and args.tune:
+        if args.use_spas_sage_hswq_attn and args.tune:
             saved_state_dict = extract_sparse_attention_state_dict(wan_t2v.model)
             torch.save(saved_state_dict, args.model_out_path)
 
@@ -385,8 +385,8 @@ def generate(args):
             t5_cpu=args.t5_cpu,
         )
         
-        if args.use_spas_sage_attn:
-            set_spas_sage_attn_wan(wan_i2v.model, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1, tune_pv=args.tune_pv)
+        if args.use_spas_sage_hswq_attn:
+            set_spas_sage_hswq_attn_wan(wan_i2v.model, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1, tune_pv=args.tune_pv)
             if not args.tune:
                 saved_state_dict = torch.load(args.model_out_path)
                 load_sparse_attention_state_dict(wan_i2v.model, saved_state_dict)
@@ -431,7 +431,7 @@ def generate(args):
                         nrow=1,
                         normalize=True,
                         value_range=(-1, 1))
-        if args.use_spas_sage_attn and args.tune:
+        if args.use_spas_sage_hswq_attn and args.tune:
             saved_state_dict = extract_sparse_attention_state_dict(wan_i2v.model)
             torch.save(saved_state_dict, args.model_out_path)
             

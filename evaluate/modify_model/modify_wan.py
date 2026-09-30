@@ -1,6 +1,6 @@
 import torch
 import torch.cuda.amp as amp
-from spas_sage_attn.autotune import SparseAttentionMeansim
+from spas_sage_hswq_attn.autotune import SparseAttentionMeansim
 from wan.modules.model import rope_apply
 
 try:
@@ -127,7 +127,7 @@ def sparge_forward(self, x, seq_lens, grid_sizes, freqs):
     return x
 
 
-def set_spas_sage_attn_wan(
+def set_spas_sage_hswq_attn_wan(
     model,
     verbose=False,
     l1=0.07,

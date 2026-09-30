@@ -5,7 +5,7 @@ We highly recommend using the `spas_sage2_attn_meansim_topk_cuda` and `block_spa
 
 ### Plug-and-Play API
 ```python
-from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_topk_cuda
 
 attn_output = spas_sage2_attn_meansim_topk_cuda(q, k, v, topk=0.5, is_causal=False)
 ```
@@ -15,7 +15,7 @@ You can adjust `topk` to balance between attention accuracy (higher `topk` is mo
 ### Customize your Block-Sparse Mask
 
 ```python
-from spas_sage_attn import block_sparse_sage2_attn_cuda
+from spas_sage_hswq_attn import block_sparse_sage2_attn_cuda
 
 attn_output = block_sparse_sage2_attn_cuda(q, k, v, mask_id=None):
 ```
@@ -77,9 +77,9 @@ python setup.py install   # or pip install -e .
 
 - `spas_sage2_attn_meansim_cuda`: SpargeAttn based on [SageAttention2](https://github.com/thu-ml/SageAttention) that we do not recommend.
 
-- `spas_sage_attn_meansim_topk_cuda`: SpargeAttn based on [SageAttention](https://github.com/thu-ml/SageAttention) that **we recommend using.**
+- `spas_sage_hswq_attn_meansim_topk_cuda`: SpargeAttn based on [SageAttention](https://github.com/thu-ml/SageAttention) that **we recommend using.**
 
-- `spas_sage_attn_meansim_cuda`: SpargeAttn based on [SageAttention](https://github.com/thu-ml/SageAttention) that we do not recommend.
+- `spas_sage_hswq_attn_meansim_cuda`: SpargeAttn based on [SageAttention](https://github.com/thu-ml/SageAttention) that we do not recommend.
 
 
 
@@ -87,7 +87,7 @@ python setup.py install   # or pip install -e .
 ### Plug-and-Play Usage
 Just replace `torch.nn.functional.scaled_dot_product_attention` API using `spas_sage2_attn_meansim_topk_cuda`:
 ```diff
-from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_topk_cuda
 
 - attn_output = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)  # is_causal can be True
 
@@ -97,7 +97,7 @@ from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
 
 ## Plug-and-Play API
 ```python
-from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_topk_cuda
 
 attn_output = spas_sage2_attn_meansim_topk_cuda(q, k, v, topk=0.5, is_causal=False)
 ```
@@ -107,7 +107,7 @@ You can adjust `topk` to balance between attention accuracy (higher `topk` is mo
 ## Customize your Block-Sparse Mask API
 
 ```python
-from spas_sage_attn import block_sparse_sage2_attn_cuda
+from spas_sage_hswq_attn import block_sparse_sage2_attn_cuda
 
 attn_output = block_sparse_sage2_attn_cuda(q, k, v, mask_id=None):
 ```
@@ -120,16 +120,16 @@ In this API, we **support computing attention for any block-sparse mask per atte
 Tuning:  
 ```bash
 # sequential tuning
-python evaluate/cogvideo_example.py  --use_spas_sage_attn --model_out_path evaluate/models_dict/CogVideoX-2b_0.06_0.07.pt --tune
+python evaluate/cogvideo_example.py  --use_spas_sage_hswq_attn --model_out_path evaluate/models_dict/CogVideoX-2b_0.06_0.07.pt --tune
 
 # parallel tuning, this will use all gpu available on the machine 
-python evaluate/cogvideo_example.py  --use_spas_sage_attn --model_out_path evaluate/models_dict/CogVideoX-2b_0.06_0.07.pt --tune --parallel_tune
+python evaluate/cogvideo_example.py  --use_spas_sage_hswq_attn --model_out_path evaluate/models_dict/CogVideoX-2b_0.06_0.07.pt --tune --parallel_tune
 ```
 
 Inference:  
 ```bash
 # `--compile` is optional and will slow the first time inference.
-python evaluate/cogvideo_example.py  --use_spas_sage_attn --model_out_path evaluate/models_dict/CogVideoX-2b_0.06_0.07.pt --compile
+python evaluate/cogvideo_example.py  --use_spas_sage_hswq_attn --model_out_path evaluate/models_dict/CogVideoX-2b_0.06_0.07.pt --compile
 ```
 
 > **Note:**

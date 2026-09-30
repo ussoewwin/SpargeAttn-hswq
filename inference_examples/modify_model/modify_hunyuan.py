@@ -4,7 +4,7 @@ from typing import Optional
 from diffusers.models.attention_processor import Attention
 from diffusers.models.embeddings import apply_rotary_emb
 from diffusers import HunyuanVideoTransformer3DModel
-from spas_sage_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
+from spas_sage_hswq_attn import spas_sage2_attn_meansim_cuda, spas_sage2_attn_meansim_topk_cuda
 
 
 class SpargeHunyuanVideoAttnProcessor2_0:

@@ -6,7 +6,7 @@ from typing import Callable, List, Optional, Tuple, Union
 from diffusers.models.attention_processor import Attention
 from diffusers.models.embeddings import apply_rotary_emb
 from diffusers import HunyuanVideoTransformer3DModel
-from spas_sage_attn.autotune import SparseAttentionMeansim
+from spas_sage_hswq_attn.autotune import SparseAttentionMeansim
 import inspect
 import warnings
 from typing import Any, Dict, Optional, Union
@@ -235,7 +235,7 @@ def forward(
 
 
 
-def set_spas_sage_attn_hunyuan(
+def set_spas_sage_hswq_attn_hunyuan(
     model: HunyuanVideoTransformer3DModel,
     verbose=False,
     l1=0.07,

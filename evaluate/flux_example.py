@@ -2,9 +2,9 @@ import torch
 from diffusers import FluxPipeline
 from diffusers import FluxTransformer2DModel
 import torch, argparse
-from modify_model.modify_flux import set_spas_sage_attn_flux
+from modify_model.modify_flux import set_spas_sage_hswq_attn_flux
 import os, gc
-from spas_sage_attn.autotune import (
+from spas_sage_hswq_attn.autotune import (
     extract_sparse_attention_state_dict,
     load_sparse_attention_state_dict,
 )
@@ -15,7 +15,7 @@ file_path = "evaluate/datasets/video/prompts.txt"
 def parse_args():
     parser = argparse.ArgumentParser(description="Flux Evaluation")
 
-    parser.add_argument("--use_spas_sage_attn", action="store_true", help="Use Sage Attention")
+    parser.add_argument("--use_spas_sage_hswq_attn", action="store_true", help="Use Sage Attention")
     parser.add_argument("--tune", action="store_true", help="tuning hyperpamameters")
     parser.add_argument('--parallel_tune', action='store_true', help='enable prallel tuning')
     parser.add_argument('--l1', type=float, default=0.06, help='l1 bound for qk sparse')
@@ -56,8 +56,8 @@ if __name__ == "__main__":
             subfolder="transformer",
             torch_dtype=torch.float16,
         )
-        if args.use_spas_sage_attn:
-            set_spas_sage_attn_flux(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
+        if args.use_spas_sage_hswq_attn:
+            set_spas_sage_hswq_attn_flux(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
 
         pipe = FluxPipeline.from_pretrained(
             model_id,
@@ -95,8 +95,8 @@ if __name__ == "__main__":
             subfolder="transformer",
             torch_dtype=torch.float16,
         )
-        if args.use_spas_sage_attn:
-            set_spas_sage_attn_flux(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
+        if args.use_spas_sage_hswq_attn:
+            set_spas_sage_hswq_attn_flux(transformer, verbose=args.verbose, l1=args.l1, pv_l1=args.pv_l1)
             saved_state_dict = torch.load(args.model_out_path)
             load_sparse_attention_state_dict(transformer, saved_state_dict)
 
