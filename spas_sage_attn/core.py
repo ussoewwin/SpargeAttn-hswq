@@ -17,6 +17,7 @@ limitations under the License.
 import torch
 from .utils import hyperparameter_check, get_block_map_meansim, get_block_map_meansim_fuse_quant, get_vanilla_qk_quant, block_map_lut_triton
 from .quant_per_block import per_block_int8, per_warp_int8
+from .scale_sweep import per_block_int8_swept, swept_quant_enabled
 from einops import rearrange
 
 import spas_sage_attn._qattn as qattn
@@ -63,6 +64,7 @@ def spas_sage2_attn_meansim_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is_caus
 
     if scale is None:
         scale = 1.0 / (headdim ** 0.5)
+
 
     assert headdim in [64, 128], "headdim should be in [64, 128]. For other headdim, you can use padding and specify the softmax scale."
 
@@ -129,6 +131,16 @@ def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is
 
     if scale is None:
         scale = 1.0 / (headdim ** 0.5)
+    # E2-a (bit-width preserving): optional per-block INT8 scale sweep.
+    # Prediction/LUT stay untouched (the fused call above pools from fp16
+    # inputs); only the quantized tensors handed to the kernels change.
+    if swept_quant_enabled() and tensor_layout == "HND":
+        try:
+            q_int8, q_scale, k_int8, k_scale = per_block_int8_swept(
+                q, k, BLKQ=128, BLKK=64, sm_scale=scale
+            )
+        except Exception:
+            pass  # stock fused-quant tensors remain in place on any failure
 
     assert headdim in [64, 128], "headdim should be in [64, 128]. For other headdim, you can use padding and specify the softmax scale."
 
