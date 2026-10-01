@@ -15,6 +15,17 @@
  */
 
 #pragma once
+
+#if defined(_WIN32) || defined(_MSC_VER)
+#undef _GLIBCXX_USE_CXX11_ABI
+#ifndef _GLIBCXX_BEGIN_NAMESPACE_CXX11
+#define _GLIBCXX_BEGIN_NAMESPACE_CXX11
+#endif
+#ifndef _GLIBCXX_END_NAMESPACE_CXX11
+#define _GLIBCXX_END_NAMESPACE_CXX11
+#endif
+#endif
+
 #include <torch/extension.h>
 #include <cstdint>
 #include <sstream>

@@ -72,7 +72,7 @@ def partition_points_into_line(points, block_size, min_dim1=-1, max_dim1=1):
     return blocks
 
 # 
-from tools.gpu_process import GPUProcessPoolExecutor
+from .gpu_process import GPUProcessPoolExecutor
 executor = GPUProcessPoolExecutor()
 
 class SparseAttentionMeansim(nn.Module):

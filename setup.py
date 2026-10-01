@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import os
+import sys
 from pathlib import Path
 import subprocess
 from packaging.version import parse, Version
@@ -28,8 +29,52 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 HAS_SM90 = False
 SAGE2PP_ENABLED = True
 
+# Windows CreateProcess 32k command-line limit fix for link.exe
+if os.name == "nt":
+
+    def _create_safe_spawn(orig_spawn):
+        def _safe_spawn(self, cmd, *args, **kwargs):
+            if len(cmd) > 1 and ("link.exe" in cmd[0].lower() or cmd[0].lower().endswith("link")):
+                total_len = sum(len(c) for c in cmd)
+                if total_len > 8000:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile("w", suffix=".rsp", delete=False, encoding="utf-8") as f:
+                        for arg in cmd[1:]:
+                            if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
+                                f.write(f'"{arg}"\n')
+                            else:
+                                f.write(f'{arg}\n')
+                        rsp_name = f.name
+                    try:
+                        return orig_spawn(self, [cmd[0], f"@{rsp_name}"], *args, **kwargs)
+                    finally:
+                        try:
+                            os.remove(rsp_name)
+                        except Exception:
+                            pass
+            return orig_spawn(self, cmd, *args, **kwargs)
+        return _safe_spawn
+
+    for mod_name in [
+        "setuptools._distutils.compilers.C.msvc",
+        "setuptools._distutils._msvccompiler",
+        "distutils._msvccompiler",
+    ]:
+        try:
+            mod = __import__(mod_name, fromlist=["Compiler", "MSVCCompiler"])
+            cls = getattr(mod, "Compiler", getattr(mod, "MSVCCompiler", None))
+            if cls and hasattr(cls, "spawn"):
+                cls.spawn = _create_safe_spawn(cls.spawn)
+        except Exception:
+            pass
+
+
+
 def run_instantiations(src_dir: str):
     base_path = Path(src_dir)
+    existing_cu = list(base_path.glob("*.cu"))
+    if existing_cu:
+        return
     py_files = [
         path for path in base_path.rglob('*.py')
         if path.is_file()
@@ -37,7 +82,7 @@ def run_instantiations(src_dir: str):
 
     for py_file in py_files:
         print(f"Running: {py_file}")
-        os.system(f"python {py_file}")
+        subprocess.check_call([sys.executable, str(py_file)], cwd=str(base_path))
 
 def get_instantiations(src_dir: str):
     # get all .cu files under src_dir
@@ -49,25 +94,49 @@ def get_instantiations(src_dir: str):
     ]
 
 # Supported NVIDIA GPU architectures.
-SUPPORTED_ARCHS = {"8.0", "8.6", "8.7", "8.9", "9.0"}
+SUPPORTED_ARCHS = {"8.0", "8.6", "8.7", "8.9", "9.0", "10.0", "12.0", "12.1"}
 
 # Compiler flags.
-CXX_FLAGS = ["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++17", "-DENABLE_BF16"]
-NVCC_FLAGS = [
-    "-O3",
-    "-std=c++17",
-    "-U__CUDA_NO_HALF_OPERATORS__",
-    "-U__CUDA_NO_HALF_CONVERSIONS__",
-    "--use_fast_math",
-    "--threads=8",
-    "-Xptxas=-v",
-    "-diag-suppress=174", # suppress the specific warning
-    "-Xcompiler", "-include,cassert", # fix error occurs when compiling for SM90+ with newer CUDA toolkits
-]
+# Windows/MSVC note (HSWQ fork): -fopenmp/-lgomp are gcc-only; CUDA 13.x CCCL
+# requires the standard-conforming preprocessor (/Zc:preprocessor) and the
+# assert include. Mirror the flag set proven in the SageAttention Windows fork.
+import os as _os
+if _os.name == "nt":
+    CXX_FLAGS = ["/O2", "/std:c++20", "/Zc:preprocessor", "/Zc:__cplusplus", "-DENABLE_BF16"]
+    NVCC_FLAGS = [
+        "-O3",
+        "-std=c++20",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "--use_fast_math",
+        "--threads=8",
+        "-Xptxas=-v",
+        "-diag-suppress=174", # suppress the specific warning
+        "-diag-suppress=177",
+        "-diag-suppress=221",
+        "-D_WIN32=1",
+        "-Xcompiler", "/Zc:preprocessor",   # CUDA 13 CCCL requires standard-conforming pp
+        "-Xcompiler", "/std:c++20",
+        "-Xcompiler", "/Zc:__cplusplus",
+    ]
+else:
+    CXX_FLAGS = ["-g", "-O3", "-fopenmp", "-lgomp", "-std=c++17", "-DENABLE_BF16"]
+    NVCC_FLAGS = [
+        "-O3",
+        "-std=c++17",
+        "-U__CUDA_NO_HALF_OPERATORS__",
+        "-U__CUDA_NO_HALF_CONVERSIONS__",
+        "--use_fast_math",
+        "--threads=8",
+        "-Xptxas=-v",
+        "-diag-suppress=174", # suppress the specific warning
+        "-Xcompiler", "-include,cassert", # fix error occurs when compiling for SM90+ with newer CUDA toolkits
+    ]
 
-ABI = 1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0
-CXX_FLAGS += [f"-D_GLIBCXX_USE_CXX11_ABI={ABI}"]
-NVCC_FLAGS += [f"-D_GLIBCXX_USE_CXX11_ABI={ABI}"]
+if _os.name != "nt":
+    ABI = 1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0
+    CXX_FLAGS += [f"-D_GLIBCXX_USE_CXX11_ABI={ABI}"]
+    NVCC_FLAGS += [f"-D_GLIBCXX_USE_CXX11_ABI={ABI}"]
 
 if CUDA_HOME is None:
     raise RuntimeError(
@@ -96,8 +165,20 @@ def get_torch_arch_list() -> Set[str]:
     if env_arch_list is None:
         return set()
 
-    # List are separated by ; or space.
-    torch_arch_list = set(env_arch_list.replace(" ", ";").split(";"))
+    raw_arch_list = env_arch_list.replace(" ", ";").split(";")
+    torch_arch_list = set()
+    for item in raw_arch_list:
+        item = item.strip()
+        if not item:
+            continue
+        ptx = "+PTX" if item.endswith("+PTX") else ""
+        base = item[:-4] if ptx else item
+        if base in ("80", "86", "87", "89", "90"):
+            base = f"{base[0]}.{base[1]}"
+        elif base in ("100", "120", "121"):
+            base = f"{base[:2]}.{base[2:]}"
+        torch_arch_list.add(base + ptx)
+
     if not torch_arch_list:
         return set()
 
@@ -153,10 +234,12 @@ if nvcc_cuda_version < Version("12.8"):
 # Add target compute capabilities to NVCC flags.
 for capability in compute_capabilities:
     num = capability.replace(".", "")
-    if num == '90':
+    if num == '90' and not any(cc.startswith("10.") or cc.startswith("12.") for cc in compute_capabilities):
         num = '90a'
         HAS_SM90 = True
         CXX_FLAGS += ["-DHAS_SM90"]
+    elif num == '90':
+        num = '90a'
     if num == '80' or num == '86' or num == '87':
         SAGE2PP_ENABLED = False
     
@@ -169,9 +252,9 @@ if SAGE2PP_ENABLED:
 
 ext_modules = []
 
-run_instantiations("csrc/qattn/instantiations_sm80")
-run_instantiations("csrc/qattn/instantiations_sm89")
-run_instantiations("csrc/qattn/instantiations_sm90")
+# run_instantiations("csrc/qattn/instantiations_sm80")
+# run_instantiations("csrc/qattn/instantiations_sm89")
+# run_instantiations("csrc/qattn/instantiations_sm90")
 
 sources = [
     "csrc/qattn/pybind.cpp",
@@ -204,12 +287,31 @@ fused_extension = CUDAExtension(
 )
 ext_modules.append(fused_extension)
 
+def get_package_version():
+    base_version = "1.0.0"
+    torch_version_raw = parse(torch.__version__)
+    torch_version = f"{torch_version_raw.major}.{torch_version_raw.minor}.{torch_version_raw.micro}" if hasattr(torch_version_raw, 'micro') else f"{torch_version_raw.major}.{torch_version_raw.minor}"
+    
+    cuda_version = "132"
+    if torch.version.cuda:
+        cuda_version = torch.version.cuda.replace(".", "")
+    
+    cxx11_abi = "TRUE"
+    if hasattr(torch._C, "_GLIBCXX_USE_CXX11_ABI"):
+        cxx11_abi = str(torch._C._GLIBCXX_USE_CXX11_ABI).upper()
+        
+    local_version = f"cu{cuda_version}torch{torch_version}cxx11abi{cxx11_abi}"
+    return f"{base_version}+{local_version}"
+
 setup(
     name='spas_sage_hswq_attn', 
-    version='1.0.0',  
+    version=get_package_version(),  
     author='Jintao Zhang, Chendong Xiang, Haofeng Huang',  
     author_email='jt-zhang6@gmail.com', 
-    packages=find_packages(),  
+    # Ship ONLY the attention package. Generic top-level names such as 'tools',
+    # 'evaluate' and 'inference_examples' must never be installed: they shadow
+    # same-named packages other consumers rely on.
+    packages=["spas_sage_hswq_attn"],  
     description='Accurate and efficient Sparse SageAttention.',  
     long_description=open('README.md', encoding='utf-8').read(),  
     long_description_content_type='text/markdown', 
