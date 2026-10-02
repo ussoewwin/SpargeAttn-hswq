@@ -1,12 +1,12 @@
-# SpargeAttn-hswq v1.0.0 Technical Specification & Architecture Guide
+# SpargeAttn-hswq v1.0 Technical Specification & Architecture Guide
 
-This document provides a comprehensive technical breakdown of all architectural modifications, build pipeline enhancements, and algorithmic improvements implemented in **SpargeAttn-hswq v1.0.0** (`spas_sage_hswq_attn` v1.0.0) relative to the upstream official repository ([thu-ml/SpargeAttn](https://github.com/thu-ml/SpargeAttn)).
+This document provides a comprehensive technical breakdown of all architectural modifications, build pipeline enhancements, and algorithmic improvements implemented in **SpargeAttn-hswq v1.0** (`spas_sage_hswq_attn` v1.0) relative to the upstream official repository ([thu-ml/SpargeAttn](https://github.com/thu-ml/SpargeAttn)).
 
 ---
 
-## 1. Executive Summary of Modifications (改造の概要)
+## 1. Executive Summary of Modifications
 
-SpargeAttn-hswq v1.0.0 transforms the upstream Linux-centric research implementation of SpargeAttn into an enterprise-grade, high-performance attention backend fully integrated with native Windows environments and advanced quantization frameworks (such as HSWQ). The modifications span four core domains:
+SpargeAttn-hswq v1.0 transforms the upstream Linux-centric research implementation of SpargeAttn into an enterprise-grade, high-performance attention backend fully integrated with native Windows environments and advanced quantization frameworks (such as HSWQ). The modifications span four core domains:
 
 1. **Native Windows / MSVC Build Infrastructure**:
    - Automated response file substitution (`@link.rsp`) monkey-patching MSVC linker invocation to eliminate Windows `CreateProcess` 32,767-character limit failures (`LNK1104` / `LNK1189`).
@@ -29,7 +29,7 @@ SpargeAttn-hswq v1.0.0 transforms the upstream Linux-centric research implementa
 
 ---
 
-## 2. Engineering Intent & Rationale (その意図)
+## 2. Engineering Intent & Rationale
 
 ### 2.1 Overcoming Windows Platform Barriers
 Upstream SpargeAttn generates 219 independent CUDA kernel translation units (`instantiations_sm80`, `instantiations_sm89`, `instantiations_sm90`). Under Windows, passing these object files to `link.exe` produces command lines exceeding 50,000 characters. Because the Windows kernel API `CreateProcessW` enforces an immutable 32,767-character limit, standard `setuptools` builds fail immediately. Furthermore, CUDA 13.x includes NVIDIA CCCL headers that strictly require conforming C++ preprocessors; without `/Zc:preprocessor`, header compilation aborts with macro syntax errors. Resolving these issues natively without requiring external WSL2 layers was essential for production deployment in Windows-based inference runtimes (e.g., ComfyUI, WebUI).
@@ -42,7 +42,7 @@ Reducing QK quantization bit-widths from INT8 to NVFP4 or FP4 destabilizes atten
 
 ---
 
-## 3. List of Modified & Created Files (新規作成・修正したファイル名)
+## 3. List of Modified & Created Files
 
 | File Path | Type | Role & Functional Description |
 |---|---|---|
@@ -58,7 +58,7 @@ Reducing QK quantization bit-widths from INT8 to NVFP4 or FP4 destabilizes atten
 
 ---
 
-## 4. Full Source Code & Technical Walkthrough (新規作成・修正したコード全文と解説)
+## 4. Full Source Code & Technical Walkthrough
 
 ### 4.1 Build System & Linker Infrastructure: `setup.py`
 
@@ -105,7 +105,7 @@ if os.name == "nt":
             pass
 ```
 
-##### Detailed Architectural Analysis (コードの意味・詳細解説)
+##### Detailed Architectural Analysis
 - **Problem Formulation**: When `BuildExtension` invokes the MSVC linker (`link.exe`), it passes every compiled `.obj` file as a command-line argument. With 219 kernel instantiation files, the constructed command-line string exceeds 50,000 characters. Under Windows, `CreateProcessW` fails with error code 206 (`ERROR_FILENAME_EXCED_RANGE`) or aborts inside `distutils` as `LNK1104: cannot open file`.
 - **Interception Mechanism**: The script inspects `distutils` / `setuptools` internals across multiple compatibility paths (`setuptools._distutils.compilers.C.msvc`, `_msvccompiler`, and legacy `distutils._msvccompiler`). It wraps the compiler class's `spawn` method via closure monkey-patching.
 - **Response File Generation (`.rsp`)**: When `cmd[0]` contains `link.exe` and the cumulative command-line length exceeds 8,000 characters, it intercepts all positional arguments (`cmd[1:]`). Arguments containing spaces are safely wrapped in double quotes, and each argument is written on a discrete newline into a temporary file with a `.rsp` suffix encoded in UTF-8.
@@ -162,7 +162,7 @@ if _os.name != "nt":
     NVCC_FLAGS += [f"-D_GLIBCXX_USE_CXX11_ABI={ABI}"]
 ```
 
-##### Detailed Architectural Analysis (コードの意味・詳細解説)
+##### Detailed Architectural Analysis
 - **Flag Sanitization**: Upstream flags included `-fopenmp` and `-lgomp`, which are GCC-specific options unrecognized by MSVC (`cl.exe`), producing fatal error `D8021: invalid numeric argument`. On Windows, these are stripped and replaced with `/O2` optimization and native MSVC semantics.
 - **C++20 & Standard-Conforming Preprocessor**: Under CUDA 13.x, CCCL headers (specifically `<cuda/std/__fwd/string.h>` and `<cuda/std/tuple>`) rely on standard C++20 macro expansions. Passing `/Zc:preprocessor` enables the standard-conforming preprocessor in MSVC, and `/Zc:__cplusplus` ensures the `__cplusplus` macro accurately reports the supported standard level. Passing these via `-Xcompiler` forwards them directly through `nvcc` to host compiler passes.
 - **CCCL Windows ABI Conflict Prevention**: Upstream unconditionally set `-D_GLIBCXX_USE_CXX11_ABI=1`. On Windows under MSVC, `_GLIBCXX_USE_CXX11_ABI` is undefined because GCC's libstdc++ is not used. Defining this macro causes CCCL template specializations to collide with MSVC STL headers. The fork restricts this definition strictly to non-Windows platforms (`if _os.name != "nt"`).
@@ -243,7 +243,7 @@ def get_package_version():
     return f"{base_version}+{local_version}"
 ```
 
-##### Detailed Architectural Analysis (コードの意味・詳細解説)
+##### Detailed Architectural Analysis
 - **Normalizing Unformatted Compute Capabilities**: Build systems frequently define `TORCH_CUDA_ARCH_LIST="80;86;89;90;100;120;121"`. Without normalized dot insertion, two-digit (`80` → `8.0`) and three-digit (`100` → `10.0`, `120` → `12.0`, `121` → `12.1`) strings fail string matching against upstream sets. The parser automatically normalizes both formats into dotted compute architectures.
 - **Hopper / Blackwell Flag Isolation**: Upstream code unconditionally appended `-DHAS_SM90` whenever compute capability 9.0 was present. When compiling for Blackwell (`sm_100`, `sm_120`), defining `HAS_SM90` forced the inclusion of Hopper TMA (Tensor Memory Accelerator) cluster directives into non-Hopper compilation passes, causing `ptxas` compiler errors. The fork strictly guards `-DHAS_SM90` to pure Hopper builds.
 - **Flash-Attention Dynamic Version String**: Standard pip wheels must clearly convey the host PyTorch and CUDA ABI runtime configuration. The function dynamically queries the running PyTorch environment and constructs standard strings such as `1.0.0+cu132torch2.14.0cxx11abitrue`, enabling predictable pip dependency resolution.
@@ -369,7 +369,7 @@ def swept_quant_enabled() -> bool:
     )
 ```
 
-##### Detailed Architectural Analysis (コードの意味・詳細解説)
+##### Detailed Architectural Analysis
 - **The Outlier Dilution Problem**: Upstream SpargeAttn quantizes Q and K blocks using a single uniform scale factor: $\text{scale} = \frac{\max(|x|)}{127} + 10^{-7}$. If a single outlier element in a $128 \times 64$ block reaches $12.0$ while all remaining tokens cluster around $0.2$, the scale factor becomes $12.0 / 127 \approx 0.0945$. Consequently, the bulk tokens receive quantized values in the range $[-2, 2]$, squandering the precision of the remaining 125 INT8 representation buckets and inflating reconstruction MSE.
 - **Candidate Ratio Spectrum**: `int8_scale_candidates` defines 10 candidate multipliers: $\{1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 1.1, 1.25, 1.5, 2.0\}$. Multipliers below $1.0$ deliberately clip the isolated outlier at $-127$ or $127$ in exchange for significantly finer resolution across the dense bulk distribution. Because ratio $1.0$ is included in the search space, the swept scale is guaranteed to achieve reconstruction MSE less than or equal to the upstream baseline ($\le \text{stock MSE}$ across 100% of tested blocks).
 - **Exact Kernel Arithmetic Emulation**: `_quantize_block_int8` precisely models the rounding behavior of the CUDA/Triton kernels: `torch.sign(x) * torch.floor(torch.abs(x) + 0.5)`. The Q tensor folds the softmax scale factor into the base scale domain using $sm\_scale \times \log_2(e) \approx sm\_scale \times 1.44269504$, identical to upstream CUDA kernel register initialization.
@@ -500,7 +500,7 @@ def apply_importance_weighting(
     return out
 ```
 
-##### Detailed Architectural Analysis (コードの意味・詳細解説)
+##### Detailed Architectural Analysis
 - **Eliminating Decision Boundary Instability**: Upstream autotuning (`SparseAttentionMeansim`) converges on the most aggressive threshold that satisfies an average $L_1$ gate on calibration samples. In diffusion models (e.g., SDXL, Flux, CogVideoX), attention heads with heavy-tailed logit distributions encounter intermittent token spikes on specific diffusion timesteps or random seeds. Sitting directly on the quality threshold causes the kernel to falsely skip critical KV blocks, producing transient visual flicker or frame-to-frame pixel popping.
 - **Binary Search Breaking-Point Detection**: `calibrate_headroom` performs 6 iterations of binary search over $[0, base\_pv]$, identifying the exact numerical threshold $\text{breaking}$ where $L_1$ error breaches the autotuner's quality gate $\text{pv\_l1}$ at $\approx 1.6\%$ resolution.
 - **Safe Headroom Expansion**: The threshold is expanded by `target_gap` ($1.10$, or $+10\%$), but strictly bounded below $0.95 \times \text{breaking}$. This guarantees that headroom never expands into instability. Concurrently, `simthreshd1` is shifted negative (forcing more blocks to be recognized as self-similar and preserved), and `topk` is proportionally widened.
@@ -529,14 +529,14 @@ def apply_importance_weighting(
     assert headdim in [64, 128], "headdim should be in [64, 128]. For other headdim, you can use padding and specify the softmax scale."
 ```
 
-##### Detailed Architectural Analysis (コードの意味・詳細解説)
+##### Detailed Architectural Analysis
 - **Zero-Risk Fail-Safe Execution**: The integration is placed immediately after block LUT generation and before kernel dispatch. Because block pooling derives from the original FP16 inputs, scale sweeping does not alter Stage-1 block mask decisions.
 - **Silent Degradation Prevention**: If any unhandled exception occurs inside `per_block_int8_swept` (e.g., unexpected memory layout or CUDA out-of-memory), the `try...except` block silently catches the failure and retains the stock fused-quant tensors (`q_int8, q_scale, k_int8, k_scale`). Production inference is never interrupted.
 - **Opt-In Gate**: Controlled via the environment variable `SPARGE_SCALE_SWEEP=1`, ensuring 100% byte-exact upstream compatibility unless explicitly enabled.
 
 ---
 
-## 5. Verification & Test Methodology (検証と動作確認)
+## 5. Verification & Test Methodology
 
 The modifications have been rigorously validated under Python 3.13 and Python 3.14 on Windows 11 with CUDA 13.2 and NVIDIA Blackwell (`sm_120`) architecture:
 
