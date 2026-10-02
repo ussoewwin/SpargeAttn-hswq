@@ -1,6 +1,8 @@
 # SpargeAttention
 
-> **This repository is a fork of official [thu-ml/SpargeAttn](https://github.com/thu-ml/SpargeAttn)**
+[![View Code](https://img.shields.io/badge/📂_View_Code-GitHub-181717?style=for-the-badge&logo=github)](https://github.com/thu-ml/SpargeAttn)
+
+This repository is an enhanced fork of the official repository ([https://github.com/thu-ml/SpargeAttn](https://github.com/thu-ml/SpargeAttn)), created under the Apache 2.0 license. It independently implements native Windows / MSVC build support (CUDA 13.x compatibility, linker response file substitution), full 7-generation GPU architecture coverage (including NVIDIA Blackwell `sm_100`, `sm_120`, `sm_121`), package namespace isolation (`spas_sage_hswq_attn`), and bit-width-preserving quantization enhancements.
 
 ## Recommended API
 We highly recommend using the `spas_sage2_attn_meansim_topk_cuda` and `block_sparse_sage2_attn_cuda` APIs. They are plug-and-play and customizable:
@@ -114,7 +116,7 @@ from spas_sage_hswq_attn import block_sparse_sage2_attn_cuda
 attn_output = block_sparse_sage2_attn_cuda(q, k, v, mask_id=None):
 ```
 
-In this API, we **support computing attention for any block-sparse mask per attention head**. Specifically, the per-head attention mask `mask_id` has shape `(batch_size, num_heads, ⌈seq_len / 128⌉, ⌈seq_len // 64⌉)` and consists of `0` and `1`. Currently, the block size is 128×64.
+In this API, we **support computing attention for any block-sparse mask per attention head**. Specifically, the per-head attention mask `mask_id` has shape `(batch_size, num_heads, ⌈seq_len / 128⌉, ⌈seq_len // 64⌉)` and batches consists of `0` and `1`. Currently, the block size is 128×64.
 
 <!-- 
 ### CogVideoX
