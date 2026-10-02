@@ -1,6 +1,6 @@
-# SpargeAttention (HSWQ Fork)
+# SpargeAttention
 
-> **Notice:** This repository is an enhanced fork of the official [thu-ml/SpargeAttn](https://github.com/thu-ml/SpargeAttn) featuring custom improvements: native Windows / MSVC build support (CUDA 13.x compatibility, MSVC 32k linker command-line limit bypass via response files, and CCCL Windows ABI fixes), native code generation for NVIDIA Blackwell architectures (`sm_100`, `sm_120`, `sm_121`) in addition to existing architectures (`sm_80`, `sm_86`, `sm_89`, `sm_90a`), and optimized pre-built wheels for Python 3.13 and Python 3.14.
+This repository is a fork of official [thu-ml/SpargeAttn](https://github.com/thu-ml/SpargeAttn) with custom improvements.
 
 ## Recommended API
 We highly recommend using the `spas_sage2_attn_meansim_topk_cuda` and `block_sparse_sage2_attn_cuda` APIs. They are plug-and-play and customizable:
@@ -217,7 +217,7 @@ Our approach is universal, and we warmly welcome contributions! Feel free to sub
 
 ## Changelog
 
-- [md/changelog.md](md/changelog.md)
+See [Changelog](md/changelog.md).
 
 ## License & Attribution
 
