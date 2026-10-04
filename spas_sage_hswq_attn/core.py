@@ -295,6 +295,159 @@ def spas_sage2_attn_meansim_topk_nhd_cuda(q, k, v, is_causal=False, scale=None, 
 
     return o
     
+# ---------------------------------------------------------------------------
+# Variable-length (packed) topk SpargeAttn.
+# ---------------------------------------------------------------------------
+from collections import OrderedDict as _OrderedDict
+_VARLEN_PLAN_CACHE = _OrderedDict()
+_VARLEN_PLAN_CACHE_MAX = 64
+_VARLEN_DEV_TENSOR_CACHE = _OrderedDict()
+_VARLEN_DEV_TENSOR_CACHE_MAX = 64
+
+
+def _dev_tensor(seq, device):
+    """Cache small index lists as device tensors (keyed by content+device)."""
+    key = (device, tuple(seq))
+    t = _VARLEN_DEV_TENSOR_CACHE.get(key)
+    if t is None:
+        t = torch.tensor(seq, dtype=torch.long, device=device)
+        _VARLEN_DEV_TENSOR_CACHE[key] = t
+        while len(_VARLEN_DEV_TENSOR_CACHE) > _VARLEN_DEV_TENSOR_CACHE_MAX:
+            _VARLEN_DEV_TENSOR_CACHE.popitem(last=False)
+    return t
+
+
+@torch.compiler.disable
+def spas_sage2_attn_meansim_topk_varlen_cuda(
+    q, k, v, cu_seqlens_q, cu_seqlens_k,
+    max_seqlen_q=None, max_seqlen_k=None,
+    is_causal=False, scale=None, simthreshd1=-0.1, topk=0.5,
+    pvthreshd=50, attention_sink=False, output_dtype=None,
+):
+    """topk SpargeAttn for packed variable-length sequences (NHD layout).
+
+    q, k, v: (total_q, H, D) / (total_k, H, D) contiguous fp16/bf16, packed
+             according to cu_seqlens_q / cu_seqlens_k (len = num_seqs + 1).
+
+    Both uniform and mixed sequence lengths are supported on the existing
+    fixed-length (batched) kernels -- the fixed-length premise is never
+    violated:
+      * uniform : every sequence shares one length -> a SINGLE zero-copy
+                  batched launch (exactly the fixed-length fast path).
+      * mixed   : sequences are bucketed by identical (L_q, L_k); each bucket
+                  costs ONE batched launch. Contiguous buckets use zero-copy
+                  views; scattered buckets use a single gather + scatter.
+                  No per-sequence launches and no padding waste.
+    The bucket plan is cached by the order-independent multiset of window
+    lengths, so real runs (which permute windows between calls) still hit it.
+
+    Returns o: (total_q, H, D) with the same dtype as q.
+    """
+    assert q.stride(-1) == 1 and k.stride(-1) == 1 and v.stride(-1) == 1
+    total_q = q.size(0)
+    total_k = k.size(0)
+    heads = q.size(1)
+    headdim = q.size(2)
+    assert headdim in (64, 128), "headdim should be in [64, 128]."
+    assert k.size(1) == heads and v.size(1) == heads
+
+    in_dtype = q.dtype
+    if k.dtype != in_dtype:
+        k = k.to(in_dtype)
+    if v.dtype != in_dtype:
+        v = v.to(in_dtype)
+
+    cq = cu_seqlens_q.tolist()
+    ck = cu_seqlens_k.tolist()
+    n = len(cq) - 1
+    # Cache key = exact multiset of (Lq, Lk) plus num_seqs/heads/headdim.
+    # Order-independent, so calls that merely permute the same window lengths
+    # hit the cache. Bumped by a cheap counter to bound memory.
+    from collections import Counter as _Counter
+    _lens_q = [cq[i + 1] - cq[i] for i in range(n)]
+    _lens_k = [ck[i + 1] - ck[i] for i in range(n)]
+    plan_key = (n, heads, headdim,
+                tuple(sorted(_Counter(_lens_q).items())),
+                tuple(sorted(_Counter(_lens_k).items())))
+    plan = _VARLEN_PLAN_CACHE.get(plan_key)
+    if plan is not None:
+        _VARLEN_PLAN_CACHE.move_to_end(plan_key)
+    if plan is None:
+        buckets = {}
+        order = []
+        for i in range(n):
+            key = (_lens_q[i], _lens_k[i])
+            b = buckets.get(key)
+            if b is None:
+                b = buckets[key] = ([], [])
+                order.append(key)
+            b[0].append(cq[i])
+            b[1].append(ck[i])
+        groups = []
+        for key in order:
+            Lq, Lk = key
+            sq, sk = buckets[key]
+            contiguous = (len(sq) == 1) or all(
+                sq[j + 1] == sq[j] + Lq and sk[j + 1] == sk[j] + Lk
+                for j in range(len(sq) - 1)
+            )
+            groups.append((Lq, Lk, sq, sk, contiguous))
+        _VARLEN_PLAN_CACHE[plan_key] = groups
+        while len(_VARLEN_PLAN_CACHE) > _VARLEN_PLAN_CACHE_MAX:
+            _VARLEN_PLAN_CACHE.popitem(last=False)
+        plan = groups
+
+    device = q.device
+    o = torch.empty((total_q, heads, headdim), dtype=in_dtype, device=device)
+
+    for (Lq, Lk, sq, sk, contiguous) in plan:
+        nseq = len(sq)
+        if Lq < 128 or Lk < 128 or Lq != Lk:
+            for j in range(nseq):
+                qs = sq[j]
+                ks = sk[j]
+                qi = q[qs:qs + Lq].permute(1, 0, 2).unsqueeze(0)
+                ki = k[ks:ks + Lk].permute(1, 0, 2).unsqueeze(0)
+                vi = v[ks:ks + Lk].permute(1, 0, 2).unsqueeze(0)
+                oi = torch.nn.functional.scaled_dot_product_attention(
+                    qi, ki, vi, is_causal=is_causal)
+                o[qs:qs + Lq] = oi.squeeze(0).permute(1, 0, 2)
+            continue
+
+        if contiguous:
+            qs = sq[0]
+            ks = sk[0]
+            qb = q[qs:qs + nseq * Lq].view(nseq, Lq, heads, headdim)
+            kb = k[ks:ks + nseq * Lk].view(nseq, Lk, heads, headdim)
+            vb = v[ks:ks + nseq * Lk].view(nseq, Lk, heads, headdim)
+            idx_q = None
+        else:
+            ar_q = torch.arange(Lq, device=device)
+            ar_k = torch.arange(Lk, device=device)
+            sq_t = _dev_tensor(sq, device)
+            sk_t = _dev_tensor(sk, device)
+            idx_q = (sq_t[:, None] + ar_q[None, :]).reshape(-1)
+            idx_k = (sk_t[:, None] + ar_k[None, :]).reshape(-1)
+            qb = q.index_select(0, idx_q).view(nseq, Lq, heads, headdim)
+            kb = k.index_select(0, idx_k).view(nseq, Lk, heads, headdim)
+            vb = v.index_select(0, idx_k).view(nseq, Lk, heads, headdim)
+
+        ob = spas_sage2_attn_meansim_topk_nhd_cuda(
+            qb, kb, vb,
+            is_causal=is_causal, scale=scale, simthreshd1=simthreshd1,
+            topk=topk, pvthreshd=pvthreshd, attention_sink=attention_sink,
+        )
+        ob_flat = ob.permute(0, 2, 1, 3).reshape(-1, heads, headdim)
+        if contiguous:
+            o[qs:qs + nseq * Lq] = ob_flat
+        else:
+            o.index_copy_(0, idx_q, ob_flat)
+
+    if output_dtype is not None and output_dtype != in_dtype and o.dtype != output_dtype:
+        o = o.to(output_dtype)
+    return o
+
+
 @torch.compiler.disable
 def block_sparse_sage2_attn_cuda(q, k, v, mask_id=None, dropout_p=0.0, scale=None, smooth_k=True, pvthreshd=50, attention_sink=False, tensor_layout="HND", output_dtype=torch.float16, return_sparsity=False):
     assert tensor_layout in ['HND', 'NHD']
