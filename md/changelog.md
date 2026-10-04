@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2 — 2026-10-04
+
+- **Summary:** Blackwell (sm100/sm120/sm121) correctness & performance release — the SageAttention2++ fp16-accumulate kernel is now actually built and used on sm120
+  - **Root cause of the slowness on Blackwell:** the Sage2++ kernel (`qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold`) was guarded out at build time in the previous wheel, so `_qattn` shipped without the symbol, `SAGE2PP_ENABLED` silently resolved to `False` at import ("Warning: Sage2++ NOT enabled"), and every call fell back to the slower `f32`-accumulate kernel — which made spargeattn slower than SageAttention2 even though it is the evolved form
+  - **Fix:** rebuilt the package with `-DSAGE2PP_ENABLED` for sm120 (TORCH_CUDA_ARCH_LIST=12.0, CUDA 13.2). The fp16-accumulate kernel is now present in `_qattn` and `SAGE2PP_ENABLED` resolves to `True` at import
+  - **Measured on RTX 5060 Ti (sm120), torch 2.14.1+cu132, 25×4032:** with the Sage2++ kernel enabled, spargeattn beats sageattn_2 (e.g. topk=0.5: 51.6 ms vs 70.3 ms = 1.36x; topk=0.25: 42.6 ms vs 71.0 ms = 1.67x)
+  - Reverted an experimental batched block-map path in the SeedVR2 integration: `spas_sage2_attn_meansim_topk_cuda` already runs one window per call and internally uses the Sage2++ fp16-accumulate kernel, so the batched re-implementation only added `torch.stack` copies (q/k/v are `(total_seq,H,D)` and NA windows are ragged) and made spargeattn slower than the stock path in practice
+- **Release Notes:** [v1.2 Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.2) (to be published)
+
 ## v1.1 — 2026-10-03
 
 - **Summary:** Python-host optimization release (no kernel algorithm changes; fixed-measured faster than SageAttention2 at every sequence length)
