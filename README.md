@@ -54,9 +54,6 @@ The official implementation of [SpargeAttn](https://arxiv.org/abs/2502.18137), a
 ## Project Updates
 
 - **Please use the `spas_sage2_attn_meansim_topk_cuda` and `block_sparse_sage2_attn_cuda` APIs.**
-- [2026-10]: **v1.2** — Sage2++ fp16-accumulate kernels enabled on Blackwell (sm120) + zero-copy NHD entry point ([Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.2))
-- [2026-10]: **v1.1** — Python-host optimization: top-k selection chain rework, bf16 end-to-end, per-device caches ([Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.1))
-- [2026-10-01]: **v1.0** — Initial fork release: native Windows/MSVC build, 7-generation GPU coverage ([Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.0))
 - **Full changelog**: [md/changelog.md](md/changelog.md)
 
 ## Installation
