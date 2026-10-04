@@ -28,6 +28,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME
 
 HAS_SM90 = False
 SAGE2PP_ENABLED = True
+_SAGE2PP_AMPERE_IN_BUILD = False  # _SEEDVR2_SAGE2PP_PERSISTENT
 
 # Windows CreateProcess 32k command-line limit fix for link.exe
 if os.name == "nt":
@@ -240,8 +241,19 @@ for capability in compute_capabilities:
         CXX_FLAGS += ["-DHAS_SM90"]
     elif num == '90':
         num = '90a'
+    # _SEEDVR2_SAGE2PP_PERSISTENT:
+    # Do NOT globally disable Sage2++ just because Ampere is in the build list.
+    # The sm89 instantiation set already contains BOTH f32-accumulate (pvacum0,
+    # 72 instances) and f16-accumulate (pvacum1, Sage2++, 72 instances) variants,
+    # and the runtime dispatches by arch: Ampere (sm80/86/87) never calls the
+    # f16-accumulate kernel (core.py routes sm80-family to the fp16-V kernels).
+    # Disabling it globally made TORCH_CUDA_ARCH_LIST-unspecified (all-arch)
+    # builds ship Blackwell binaries WITHOUT the Sage2++ symbol, silently
+    # downgrading sm120 to the slower f32-accumulate path. Instead, keep Sage2++
+    # enabled whenever the toolchain can compile it; runtime arch dispatch picks
+    # the right kernel per GPU.
     if num == '80' or num == '86' or num == '87':
-        SAGE2PP_ENABLED = False
+        _SAGE2PP_AMPERE_IN_BUILD = True
     
     NVCC_FLAGS += ["-gencode", f"arch=compute_{num},code=sm_{num}"]
     if capability.endswith("+PTX"):
