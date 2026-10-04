@@ -7,7 +7,7 @@
   - **Fix:** rebuilt the package with `-DSAGE2PP_ENABLED` for sm120 (TORCH_CUDA_ARCH_LIST=12.0, CUDA 13.2). The fp16-accumulate kernel is now present in `_qattn` and `SAGE2PP_ENABLED` resolves to `True` at import
   - **Measured on RTX 5060 Ti (sm120), torch 2.14.1+cu132, 25×4032:** with the Sage2++ kernel enabled, spargeattn beats sageattn_2 (e.g. topk=0.5: 51.6 ms vs 70.3 ms = 1.36x; topk=0.25: 42.6 ms vs 71.0 ms = 1.67x)
   - Reverted an experimental batched block-map path in the SeedVR2 integration: `spas_sage2_attn_meansim_topk_cuda` already runs one window per call and internally uses the Sage2++ fp16-accumulate kernel, so the batched re-implementation only added `torch.stack` copies (q/k/v are `(total_seq,H,D)` and NA windows are ragged) and made spargeattn slower than the stock path in practice
-- **Release Notes:** [v1.2 Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.2) (to be published)
+- **Release Notes:** [v1.2 Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.2)
 
 ## v1.1 — 2026-10-03
 
