@@ -212,10 +212,6 @@ Our approach is universal, and we warmly welcome contributions! Feel free to sub
 }
 ```
 
-## Changelog
-
-See [Changelog](md/changelog.md).
-
 ## License & Attribution
 
 This project is an enhanced fork and derivative work of [SpargeAttn](https://github.com/thu-ml/SpargeAttn), originally developed by the SpargeAttn team (Tsinghua University / thu-ml).
