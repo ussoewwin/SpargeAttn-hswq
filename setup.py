@@ -288,7 +288,7 @@ fused_extension = CUDAExtension(
 ext_modules.append(fused_extension)
 
 def get_package_version():
-    base_version = "1.0.0"
+    base_version = "1.2.0"
     torch_version_raw = parse(torch.__version__)
     torch_version = f"{torch_version_raw.major}.{torch_version_raw.minor}.{torch_version_raw.micro}" if hasattr(torch_version_raw, 'micro') else f"{torch_version_raw.major}.{torch_version_raw.minor}"
     

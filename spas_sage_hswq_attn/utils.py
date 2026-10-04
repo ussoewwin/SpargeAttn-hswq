@@ -51,6 +51,25 @@ def hyperparameter_check(hyper, H, device):
 
 
 
+_HYPERPARAM_CACHE = {}
+
+def cached_hyperparam(hyper, H, device):
+    """hyperparameter_check with a module-level cache for scalar values.
+
+    The cached tensor is shared across calls and must be treated as read-only
+    (it is only ever passed to kernels as a const pointer). Tensor inputs are
+    still validated/converted per call via hyperparameter_check.
+    """
+    if isinstance(hyper, (float, int)):
+        key = (float(hyper), int(H), str(device))
+        ts = _HYPERPARAM_CACHE.get(key)
+        if ts is None:
+            ts = hyperparameter_check(hyper, H, device)
+            _HYPERPARAM_CACHE[key] = ts
+        return ts
+    return hyperparameter_check(hyper, H, device)
+
+
 @triton.jit
 def triton_block_map_to_lut_kernel(map_ptr, lut_ptr, valid_block_num_ptr, num_block_k):
     b, h, q = tl.program_id(0), tl.program_id(1), tl.program_id(2)
@@ -377,43 +396,77 @@ def get_block_map_meansim_fuse_quant(q, k, km=None, is_causal=False, BLKQ=128, B
     if cdfthreshd is not None:
         cdfthreshd = hyperparameter_check(cdfthreshd, Headnum, q.device)
     if topk is not None:
-        topk = hyperparameter_check(topk, Headnum, q.device)
+        is_topk_scalar = isinstance(topk, (int, float))
+        if not is_topk_scalar:
+            topk = hyperparameter_check(topk, Headnum, q.device)
+    else:
+        is_topk_scalar = False
     nq = (q.shape[-2] + BLKQ - 1) // BLKQ
     nk = (k.shape[-2] + BLKK - 1) // BLKK
     pooled_qblocks, sim_qblocks, q_int8, q_scale = get_pool_sim_triton_simmean_fuse_quant(q, None, BLKQ, simthreshd1)
     pooled_kblocks, sim_kblocks, k_int8, k_scale = get_pool_sim_triton_simmean_fuse_quant(k, km, BLKK, simthreshd1)
 
+    is_topk = cdfthreshd is None and topk is not None
     sim_kblocks = sim_kblocks.unsqueeze(-2).expand(-1, -1, nq, -1)  # faster than repeat
     sim_qblocks = sim_qblocks.unsqueeze(-1).expand(-1, -1, -1, nk)
     pooled_score = pooled_qblocks @ pooled_kblocks.transpose(-1, -2) * q.shape[-1] ** -0.5
-    pooled_score[~sim_kblocks] = -torch.inf
+    # torch.where instead of boolean advanced indexing: no async index copies
+    neg_inf = pooled_score.new_full((), float("-inf"))
+    pooled_score = torch.where(sim_kblocks, pooled_score, neg_inf)
     if is_causal:
-        nq = pooled_qblocks.shape[-2]
-        nk = pooled_kblocks.shape[-2]
         empty_mask = torch.empty(nq, nk, device=q.device, dtype=torch.bool)
         causal_mask = fill_causal_mask_triton(empty_mask, BLKQ / BLKK)
         pooled_score = pooled_score.masked_fill(~causal_mask[None, None, ...], -torch.inf)
     pooled_score = pooled_score.softmax(-1)
-    sorted_score = torch.sort(pooled_score, dim=-1, descending=True)
-    cdf = torch.cumsum(sorted_score.values, dim=-1)
-    B, H, Q, K = cdf.shape
-    if cdfthreshd is not None:
-        cdfthreshd_ts = cdfthreshd.view(1, H, 1, 1)
-        cdfthreshd_ts = cdfthreshd_ts.expand(B, -1, Q, 1).contiguous()
-        num_to_select = torch.searchsorted(cdf, cdfthreshd_ts, right=True).squeeze(-1)
-    else:
-        num_to_select = (topk * K).to(torch.int64).view(1, H, 1).expand(B, -1, Q).contiguous()
-    
+
     final_map = torch.zeros_like(pooled_score, dtype=torch.bool)
     final_map[~sim_kblocks] = 1
     final_map[~sim_qblocks] = 1
-    final_map = fill_block_map_triton(final_map, num_to_select, sorted_score.indices)
+
+    if is_topk:
+        # topk path: torch.topk (radix select, one kernel) replaces the
+        # sort+cumsum+searchsorted chain (three launches + heavy temp allocs
+        # that cost ~3ms fixed on Windows/WDDM for small-N cases).
+        if is_topk_scalar:
+            # Python-side count: no D2H sync (the per-head-tensor path calls .item()).
+            kmax = max(1, min(nk, int(topk * nk)))
+            if kmax >= nk:
+                # keep everything: stock semantics select all K blocks, which
+                # overrides the ~sim pre-marking (fill with True, NOT leave-as-is,
+                # otherwise similar-only blocks get skipped -> sparsity 1.0).
+                final_map.fill_(True)
+                if is_causal:
+                    final_map = final_map * causal_mask[None, None, ...]
+                if attention_sink:
+                    final_map[:, :, :, 0] = 1
+                if not return_lut:
+                    return final_map, q_int8, q_scale, k_int8, k_scale
+                else:
+                    lut, valid_block_num = block_map_lut_triton(final_map)
+                    return lut, valid_block_num, q_int8, q_scale, k_int8, k_scale
+            topk_vals, topk_idx = torch.topk(pooled_score, kmax, dim=-1, sorted=True)
+            final_map.scatter_(-1, topk_idx, True)
+        else:
+            num_per_head = (topk * nk).to(torch.int64).clamp(min=1, max=nk)  # (H,)
+            kmax = int(num_per_head.max().item())
+            topk_vals, topk_idx = torch.topk(pooled_score, kmax, dim=-1, sorted=True)
+            ar = torch.arange(kmax, device=q.device)
+            validity = (ar.view(1, 1, 1, kmax) < num_per_head.view(1, -1, 1, 1)).expand_as(topk_idx)
+            final_map.scatter_(-1, topk_idx, validity)
+    else:
+        sorted_score = torch.sort(pooled_score, dim=-1, descending=True)
+        cdf = torch.cumsum(sorted_score.values, dim=-1)
+        B, H, Q, K = cdf.shape
+        cdfthreshd_ts = cdfthreshd.view(1, H, 1, 1).expand(B, -1, Q, 1).contiguous()
+        num_to_select = torch.searchsorted(cdf, cdfthreshd_ts, right=True).squeeze(-1)
+        final_map = fill_block_map_triton(final_map, num_to_select, sorted_score.indices)
+
     if is_causal:
         final_map = final_map * causal_mask[None, None, ...]
 
     if attention_sink:
         final_map[:, :, :, 0] = 1
-    
+
     if not return_lut:
         return final_map, q_int8, q_scale, k_int8, k_scale
     else:

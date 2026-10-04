@@ -15,7 +15,7 @@ limitations under the License.
 """
 
 import torch
-from .utils import hyperparameter_check, get_block_map_meansim, get_block_map_meansim_fuse_quant, get_vanilla_qk_quant, block_map_lut_triton
+from .utils import hyperparameter_check, cached_hyperparam, get_block_map_meansim, get_block_map_meansim_fuse_quant, get_vanilla_qk_quant, block_map_lut_triton
 from .quant_per_block import per_block_int8, per_warp_int8
 from .scale_sweep import per_block_int8_swept, swept_quant_enabled
 from einops import rearrange
@@ -85,14 +85,14 @@ def spas_sage2_attn_meansim_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is_caus
         v_scale = torch.empty((b, h_kv, head_dim), dtype=torch.float32, device=v.device)
         #fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 448.0, 1)
         fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 2.25, 1)
-       
+
         if arch == "sm90":
             qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold_sm90(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
         elif SAGE2PP_ENABLED:
             qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
         else:
             qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
-    
+
     if tensor_layout == 'NHD':
         o = rearrange(o, '... H L D -> ... L H D')
     if return_sparsity:
@@ -104,26 +104,64 @@ def spas_sage2_attn_meansim_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is_caus
     else:
         return o
 
+_ARCH_CACHE = {}
+
+def _get_arch(device):
+    """Per-device compute-capability string (e.g. "sm120"), cached."""
+    idx = device.index if device.index is not None else torch.cuda.current_device()
+    arch = _ARCH_CACHE.get(idx)
+    if arch is None:
+        major, minor = torch.cuda.get_device_capability(idx)
+        arch = f"sm{major}{minor}"
+        _ARCH_CACHE[idx] = arch
+    return arch
+
+
 @torch.compiler.disable
-def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, smooth_k=True, simthreshd1=-0.1, cdfthreshd=None, topk=0.5, pvthreshd=50, attention_sink=False, tensor_layout="HND", output_dtype=torch.float16, return_sparsity=False):
+def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, smooth_k=True, simthreshd1=-0.1, cdfthreshd=None, topk=0.5, pvthreshd=50, attention_sink=False, tensor_layout="HND", output_dtype=None, return_sparsity=False):
+    """topk-ratio SpargeAttn (SageAttention2 kernels).
+
+    output_dtype: None (default) keeps the input dtype end-to-end; an explicit
+    torch dtype forces a final cast (B5 fix). Previously the default was
+    torch.float16, which silently cast bf16 outputs to fp16.
+    """
     assert tensor_layout in ['HND', 'NHD']
     if tensor_layout == 'NHD':
         q, k, v = map(lambda t: rearrange(t, '... L H D -> ... H L D'), (q, k, v))
     assert q.size(-2)>=128, "seq_len should be not less than 128."
-    torch.cuda.set_device(v.device)
 
-    dtype = q.dtype
-    if dtype == torch.float32 or dtype == torch.float16:
-        q, k, v = q.contiguous().to(torch.float16), k.contiguous().to(torch.float16), v.contiguous().to(torch.float16)
+    in_dtype = q.dtype
+    vdev0 = q.device if q.device.type == "cuda" else v.device
+    arch0 = _get_arch(vdev0)
+    if in_dtype == torch.float32 or in_dtype == torch.float16:
+        q = q.contiguous().to(torch.float16)
+        k = k.contiguous().to(torch.float16)
+        v = v.contiguous().to(torch.float16)
+    elif arch0 in ("sm80", "sm86", "sm87"):
+        # Ampere PV kernels take half* V only (decl.cuh SpargeAttentionSM80Dispatched):
+        # bf16 V must still be converted on this path.
+        q = q.contiguous().to(torch.bfloat16)
+        k = k.contiguous().to(torch.bfloat16)
+        v = v.contiguous().to(torch.float16)
     else:
-        q, k, v = q.contiguous().to(torch.bfloat16), k.contiguous().to(torch.bfloat16), v.contiguous().to(torch.float16)
+        # bf16 stays bf16 end-to-end (Q/K feeding Stage-1 Triton pooling and the
+        # INT8 QK kernels; V feeds the fused bf16->fp8 quantize kernels on
+        # sm89+). No fp16 round-trip copy for V anymore.
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
 
     if smooth_k:
         km = k.mean(dim=-2, keepdim=True)
         # k = k - km
     headdim = q.size(-1)
 
-    arch = get_cuda_arch_versions()[q.device.index]
+    vdev = v.device
+    cur = torch.cuda.current_device()
+    if vdev.index is not None and vdev.index != cur:
+        torch.cuda.set_device(vdev)
+
+    arch = _get_arch(vdev)
     if arch == "sm90":
         lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q, k, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=cdfthreshd, topk=topk, return_lut=True, attention_sink=attention_sink, BLKQ=64, BLKK=128)
     else:
@@ -144,7 +182,7 @@ def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is
 
     assert headdim in [64, 128], "headdim should be in [64, 128]. For other headdim, you can use padding and specify the softmax scale."
 
-    pvthreshd = hyperparameter_check(pvthreshd, q.size(-3), q.device)
+    pvthreshd = cached_hyperparam(pvthreshd, q.size(-3), vdev)
     o = torch.empty_like(q)
 
     if arch in ("sm80", "sm86", "sm87"):
@@ -152,7 +190,7 @@ def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is
             q_int8, k_int8, v, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, 1, False, 1, scale, 0
         )
     else:
-        ## quant v
+        ## quant v (bf16-safe: the fused fp8 kernels template on bf16 input)
         b, h_kv, kv_len, head_dim = v.shape
         padded_len = (kv_len + 127) // 128 * 128
         v_transposed_permutted = torch.empty((b, h_kv, head_dim, padded_len), dtype=v.dtype, device=v.device)
@@ -161,16 +199,18 @@ def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is
         v_scale = torch.empty((b, h_kv, head_dim), dtype=torch.float32, device=v.device)
         #fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 448.0, 1)
         fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 2.25, 1)
-        
+
         if arch == "sm90":
             qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold_sm90(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
         elif SAGE2PP_ENABLED:
             qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
         else:
             qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
-    
+
     if tensor_layout == 'NHD':
         o = rearrange(o, '... H L D -> ... L H D')
+    if output_dtype is not None and output_dtype != in_dtype and o.dtype != output_dtype:
+        o = o.to(output_dtype)
     if return_sparsity:
         if is_causal is False:
             qk_sparsity = 1 - (valid_block_num.float().sum()) / (lut.size(3) * lut.size(2) * lut.size(0) * lut.size(1))
@@ -198,9 +238,9 @@ def block_sparse_sage2_attn_cuda(q, k, v, mask_id=None, dropout_p=0.0, scale=Non
         km = k.mean(dim=-2, keepdim=True)
         # k = k - km
     headdim = q.size(-1)
-    
+
     arch = get_cuda_arch_versions()[q.device.index]
-    
+
     if arch == "sm90":
         q_int8, q_scale, k_int8, k_scale = get_vanilla_qk_quant(q, k, km, 64, 128)
     else:
@@ -228,14 +268,14 @@ def block_sparse_sage2_attn_cuda(q, k, v, mask_id=None, dropout_p=0.0, scale=Non
         v_scale = torch.empty((b, h_kv, head_dim), dtype=torch.float32, device=v.device)
         #fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 448.0, 1)
         fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 2.25, 1)
-        
+
         if arch == "sm90":
             qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold_sm90(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
         elif SAGE2PP_ENABLED:
             qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
         else:
             qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
-    
+
     if tensor_layout == 'NHD':
         o = rearrange(o, '... H L D -> ... L H D')
     if return_sparsity:
@@ -263,7 +303,7 @@ def spas_sage_hswq_attn_meansim_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is_
         # k = k - km
     headdim = q.size(-1)
 
-    lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q, k, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=cdfthreshd, return_lut=True, attention_sink=attention_sink)  # 
+    lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q, k, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=cdfthreshd, return_lut=True, attention_sink=attention_sink)  #
 
     if scale is None:
         scale = 1.0 / (headdim ** 0.5)
@@ -306,7 +346,7 @@ def spas_sage_hswq_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0
         # k = k - km
     headdim = q.size(-1)
 
-    lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q, k, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=cdfthreshd, topk=topk, return_lut=True, attention_sink=attention_sink)  # 
+    lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q, k, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=cdfthreshd, topk=topk, return_lut=True, attention_sink=attention_sink)  #
 
     if scale is None:
         scale = 1.0 / (headdim ** 0.5)

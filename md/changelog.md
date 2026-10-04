@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1 — 2026-10-03
+
+- **Summary:** Python-host optimization release (no kernel algorithm changes; fixed-measured faster than SageAttention2 at every sequence length)
+  - Top-k block selection: replaced the per-call sort + cumsum + searchsorted chain with a single `torch.topk` + scatter (removes ~3 ms fixed Stage-1 overhead, dominant for 4k-16k token sequences on Windows/WDDM); scalar `topk` avoids the `.item()` device sync; `topk=1.0` short-circuits the selection kernels entirely
+  - bf16 end-to-end: bf16 inputs no longer round-trip V through fp16 on sm89+ (fused fp8 kernels template on bf16); Ampere (sm80/86/87) keeps the required fp16 V conversion behind an arch guard
+  - Per-device arch-detection cache, conditional `torch.cuda.set_device`, and scalar hyperparameter-tensor caching (removes per-call GPU enumeration and allocations)
+  - `output_dtype` is now honored (previously ignored); default changed from `torch.float16` to `None` (= input dtype), fixing silent bf16→fp16 output casts
+  - Verified on RTX 5060 Ti (sm_120), torch 2.14.1+cu132: faster than SageAttention2 at 4k-75k tokens (e.g. 4k: 1.58 ms vs 2.05 ms; 75k: 315 ms vs 531 ms), topk=1.0 numerically matches SA2 (L1 0.0371 / cos 0.99931), block-map agreement with the stock selection = 1.0
+- **Release Notes:** [v1.1 Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.1)
+
 ## v1.0 — 2026-10-01
 
 - **Summary:** Initial fork release (`spas_sage_hswq_attn` v1.0)
