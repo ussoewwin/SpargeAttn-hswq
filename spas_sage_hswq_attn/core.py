@@ -219,6 +219,78 @@ def spas_sage2_attn_meansim_topk_cuda(q, k, v, attn_mask=None, dropout_p=0.0, is
         return o, qk_sparsity.item()
     else:
         return o
+
+
+@torch.compiler.disable
+def spas_sage2_attn_meansim_topk_nhd_cuda(q, k, v, is_causal=False, scale=None, simthreshd1=-0.1, topk=0.5, pvthreshd=50, attention_sink=False):
+    """Zero-copy topk SpargeAttn for packed NHD inputs.
+
+    q, k, v: (B, L, H, D) fp16/bf16 with last dim contiguous (arbitrary strides
+    on the other dims, e.g. a view of a packed varlen buffer).
+    Returns o: (B, H, L, D) contiguous, same dtype as q.
+
+    Same prediction, quantization and kernels as spas_sage2_attn_meansim_topk_cuda;
+    the difference is that Q/K/V are never materialized in HND layout.
+    """
+    assert q.dtype in (torch.float16, torch.bfloat16)
+    assert q.stride(-1) == 1 and k.stride(-1) == 1 and v.stride(-1) == 1
+    assert q.size(1) >= 128, "seq_len should be not less than 128."
+    if k.dtype != q.dtype:
+        k = k.to(q.dtype)
+    if v.dtype != q.dtype:
+        v = v.to(q.dtype)
+
+    # HND views (no copy)
+    q_h = q.permute(0, 2, 1, 3)
+    k_h = k.permute(0, 2, 1, 3)
+    v_h = v.permute(0, 2, 1, 3)
+
+    headdim = q.size(-1)
+    assert headdim in [64, 128], "headdim should be in [64, 128]."
+
+    vdev = v.device
+    cur = torch.cuda.current_device()
+    if vdev.index is not None and vdev.index != cur:
+        torch.cuda.set_device(vdev)
+    arch = _get_arch(vdev)
+
+    km = k_h.mean(dim=-2, keepdim=True)
+
+    if arch == "sm90":
+        lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q_h, k_h, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=None, topk=topk, return_lut=True, attention_sink=attention_sink, BLKQ=64, BLKK=128)
+    else:
+        lut, valid_block_num, q_int8, q_scale, k_int8, k_scale = get_block_map_meansim_fuse_quant(q_h, k_h, km, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=None, topk=topk, return_lut=True, attention_sink=attention_sink, BLKQ=128, BLKK=64)
+
+    if scale is None:
+        scale = 1.0 / (headdim ** 0.5)
+
+    pvthreshd = cached_hyperparam(pvthreshd, q_h.size(1), vdev)
+    B, H, L, D = q_h.shape
+    o = torch.empty((B, H, L, D), dtype=q.dtype, device=q.device)
+
+    if arch in ("sm80", "sm86", "sm87"):
+        v16 = v_h.contiguous().to(torch.float16)
+        qattn.qk_int8_sv_f16_accum_f16_block_sparse_attn_inst_buf_with_pv_threshold(
+            q_int8, k_int8, v16, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, 1, False, 1, scale, 0
+        )
+    else:
+        b, h_kv, kv_len, head_dim = v_h.shape
+        padded_len = (kv_len + 127) // 128 * 128
+        v_transposed_permutted = torch.empty((b, h_kv, head_dim, padded_len), dtype=v.dtype, device=v.device)
+        # transpose_pad_permute_cuda only requires last-dim contiguity: strided HND view is fine.
+        fused.transpose_pad_permute_cuda(v_h, v_transposed_permutted, 1)
+        v_fp8 = torch.empty(v_transposed_permutted.shape, dtype=torch.float8_e4m3fn, device=v.device)
+        v_scale = torch.empty((b, h_kv, head_dim), dtype=torch.float32, device=v.device)
+        fused.scale_fuse_quant_cuda(v_transposed_permutted, v_fp8, v_scale, kv_len, 2.25, 1)
+
+        if arch == "sm90":
+            qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold_sm90(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
+        elif SAGE2PP_ENABLED:
+            qk_int8_sv_f8_accum_f16_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
+        else:
+            qattn.qk_int8_sv_f8_accum_f32_block_sparse_attn_inst_buf_fuse_v_scale_with_pv_threshold(q_int8, k_int8, v_fp8, o, lut, valid_block_num, pvthreshd, q_scale, k_scale, v_scale, 1, False, 1, scale, 0)
+
+    return o
     
 @torch.compiler.disable
 def block_sparse_sage2_attn_cuda(q, k, v, mask_id=None, dropout_p=0.0, scale=None, smooth_k=True, pvthreshd=50, attention_sink=False, tensor_layout="HND", output_dtype=torch.float16, return_sparsity=False):

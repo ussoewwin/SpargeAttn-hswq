@@ -186,6 +186,9 @@ def triton_bmm_pool_sim_simmean_fuse_quant(
     x_quant_ptr,
     scale_ptr,
     simthreshd1,
+    stride_xb,
+    stride_xh,
+    stride_xn,
     N: tl.constexpr,
     D: tl.constexpr,
     BS: tl.constexpr,
@@ -194,9 +197,11 @@ def triton_bmm_pool_sim_simmean_fuse_quant(
     b, h, nb = tl.program_id(0), tl.program_id(1), tl.program_id(2)
     B, H, NB = tl.num_programs(0), tl.num_programs(1), tl.num_programs(2)
 
+    # Output (int8) is contiguous HND; input is read through explicit strides
+    # so permuted NHD->HND views need no .contiguous() copy.
     block_offset = b * H * N * D + h * N * D + nb * BS * D
     xmask = (nb*BS + tl.arange(0, BS)[:, None]) < N
-    x_ptrs = x_ptr + block_offset + tl.arange(0, BS)[:, None] * D + tl.arange(0, D)[None, :]
+    x_ptrs = x_ptr + b * stride_xb + h * stride_xh + (nb * BS + tl.arange(0, BS)[:, None]) * stride_xn + tl.arange(0, D)[None, :]
     x = tl.load(x_ptrs, mask = xmask)
     BS_ = BS if (N - nb*BS) >= BS else (N - nb*BS)
 
@@ -287,15 +292,18 @@ def get_vanilla_qk_quant(q, k, km=None, BLKQ=128, BLKK=64):
     return q_int8, q_scale, k_int8, k_scale
 
 def get_pool_sim_triton_simmean_fuse_quant(x, x_mean, block_size, simthreshd1):
-    x = x.contiguous()
+    if x.stride(-1) != 1:
+        x = x.contiguous()
     B, H, N, D = x.shape
     nblock = (N + block_size - 1) // block_size  # Number of blocks per feature map
     pool = torch.empty((B, H, nblock, D), device=x.device, dtype=x.dtype)
     sim_blocks = torch.empty((B, H, nblock), device=x.device, dtype=torch.bool)
-    x_quant = torch.empty(x.shape, device=x.device, dtype=torch.int8)
+    x_quant = torch.empty((B, H, N, D), device=x.device, dtype=torch.int8)
     x_scale = torch.empty((B, H, nblock), device=x.device, dtype=torch.float32)
+    if x_mean is not None and not x_mean.is_contiguous():
+        x_mean = x_mean.contiguous()
     grid = (B, H, nblock)
-    triton_bmm_pool_sim_simmean_fuse_quant[grid](x, x_mean, pool, sim_blocks, x_quant, x_scale, simthreshd1, N=N, D=D, BS=block_size, fuse_mean=(True if x_mean is not None else False))
+    triton_bmm_pool_sim_simmean_fuse_quant[grid](x, x_mean, pool, sim_blocks, x_quant, x_scale, simthreshd1, x.stride(0), x.stride(1), x.stride(2), N=N, D=D, BS=block_size, fuse_mean=(True if x_mean is not None else False))
     return pool, sim_blocks, x_quant, x_scale
 
 @triton.jit
@@ -392,9 +400,9 @@ def get_block_map_meansim_fuse_quant(q, k, km=None, is_causal=False, BLKQ=128, B
         or (cdfthreshd is not None and topk is None), "Only one of cdfthreshd and topk can be set."
     
     Headnum = q.size(1)
-    simthreshd1 = hyperparameter_check(simthreshd1, Headnum, q.device)
+    simthreshd1 = cached_hyperparam(simthreshd1, Headnum, q.device)
     if cdfthreshd is not None:
-        cdfthreshd = hyperparameter_check(cdfthreshd, Headnum, q.device)
+        cdfthreshd = cached_hyperparam(cdfthreshd, Headnum, q.device)
     if topk is not None:
         is_topk_scalar = isinstance(topk, (int, float))
         if not is_topk_scalar:
@@ -419,9 +427,7 @@ def get_block_map_meansim_fuse_quant(q, k, km=None, is_causal=False, BLKQ=128, B
         pooled_score = pooled_score.masked_fill(~causal_mask[None, None, ...], -torch.inf)
     pooled_score = pooled_score.softmax(-1)
 
-    final_map = torch.zeros_like(pooled_score, dtype=torch.bool)
-    final_map[~sim_kblocks] = 1
-    final_map[~sim_qblocks] = 1
+    final_map = torch.logical_or(~sim_kblocks, ~sim_qblocks)
 
     if is_topk:
         # topk path: torch.topk (radix select, one kernel) replaces the
