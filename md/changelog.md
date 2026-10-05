@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.1 — 2026-10-05
+
+- **Summary:** Variable-length (packed) support for the topk SpargeAttn path — fixed-length and mixed-length sequences now run on the existing batched kernels without padding waste, and the Sage2++ build fix from v1.2 is made permanent
+  - Added `spas_sage2_attn_meansim_topk_varlen_cuda` (core.py): packed `(total, H, D)` inputs with `cu_seqlens_q/k`
+    - uniform (all sequences the same length) → a single zero-copy batched launch (the fixed-length fast path)
+    - mixed lengths → sequences are bucketed by identical `(L_q, L_k)`; each bucket costs ONE batched launch. Contiguous buckets use zero-copy views, scattered buckets use one gather + one scatter. No per-sequence launches and no padding waste
+    - the bucket plan is cached by the order-independent multiset of window lengths, so real runs that permute windows between calls still hit it (no repeated setup, no per-call plan rebuild)
+  - `__init__.py` exports the new entry point
+  - `setup.py` bumps the version to 1.2.1
+  - Made the v1.2 Sage2++ fix permanent: all-arch builds no longer disable Sage2++ when Ampere (sm80/86/87) is included; the fp16-accumulate kernel stays enabled and dispatch is guarded per arch at runtime
+  - README: fork changelog links replace the upstream project-updates section
+- **Release Notes:** [v1.2.1 Release Notes](https://github.com/ussoewwin/SpargeAttn-hswq/releases/tag/v1.2.1)
+
 ## v1.2 — 2026-10-04
 
 - **Summary:** Blackwell (sm100/sm120/sm121) correctness & performance release — the SageAttention2++ fp16-accumulate kernel is now actually built and used on sm120
